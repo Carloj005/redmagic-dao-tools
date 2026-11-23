@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=DAO Buds
+Name[it]=DAO Buds
+Comment=Control Redmagic Cyberbuds DAO TWS earbuds and USB dongle
+Comment[it]=Controlla gli auricolari Redmagic Cyberbuds DAO TWS e il dongle USB
+Exec=daobuds
+Icon=daobuds
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+StartupWMClass=daobuds

@@ -1,0 +1,8 @@
+# Redmagic Cyberbuds DAO TWS (QCC3086 Dongle 19d2:0616)
+# NOTE: Must be numbered < 73 so systemd's 73-seat-late.rules applies TAG+="uaccess"!
+# Install:
+#   sudo rm -f /etc/udev/rules.d/99-redmagic-dao.rules
+#   sudo cp /home/clay-thinkpad/.gemini/antigravity/scratch/redmagic-dao-tools/70-redmagic-dao.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger -s hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="19d2", ATTRS{idProduct}=="0616", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="19d2", ATTR{idProduct}=="0616", TAG+="uaccess"

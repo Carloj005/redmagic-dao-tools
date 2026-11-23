@@ -1,0 +1,29 @@
+# Extracted third-party APK (never commit proprietary dumps)
+goper_unpack/
+*.apk
+
+# Local reverse-engineering scratch helpers
+dex_dump.py
+dex_search.py
+probe_gaia.py
+probe_gaia_deep.py
+probe_gaia_extra.py
+probe_all_custom.py
+probe_dongle_hid.py
+
+# Build artifacts
+daobuds/build/
+daobuds/pkgbuild/pkg/
+daobuds/pkgbuild/src/
+*.pkg.tar.*
+windows/build/
+windows/dist/
+windows/*.spec
+android/**/build/
+android/**/.gradle/
+android/**/local.properties
+
+# Python & OS clutter
+__pycache__/
+*.pyc
+.DS_Store
