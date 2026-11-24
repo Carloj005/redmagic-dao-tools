@@ -1,0 +1,13 @@
+[Unit]
+Description=Redmagic DAO TWS Passive BLE 0x08CA Battery & Stuck-Bud Watchdog
+After=bluetooth.target graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/daobuds-ble-watchdog
+Restart=on-failure
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=default.target

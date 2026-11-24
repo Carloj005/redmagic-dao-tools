@@ -12,12 +12,12 @@ Reverse-engineered directly from live hardware (`DC:F0:90:50:6C:81`, USB `19d2:0
 
 ## 2. BLE Advertisement (`ManufacturerData 0x08CA`)
 
-Example captured live:
+Example captured live (verified against GAIA RFCOMM L=49%, R=61%, Case=31%):
 ```
-01 01 dc f0 90 50 6c 81 01 06 02 00 02 47 ff 39 00
+01 01 dc f0 90 50 6c 81 01 06 02 00 02 31 3d 1f 00
 ```
 - Bytes `2..7`: BR/EDR MAC address (`dc:f0:90:50:6c:81`)
-- Bytes `13..15`: Battery levels (Right/Left/Case; `0xFF` = disconnected/unavailable)
+- Bytes `13..15`: Battery levels: `[Left, Right, Case]` (`0xFF` = disconnected/unavailable; bit 7 `0x80` = charging flag, bits `0..6` = `0..100%`)
 
 ## 3. Bluetooth RFCOMM GAIA v3 Protocol (Channel 11)
 
@@ -40,7 +40,7 @@ Frame format (big-endian):
 | `0x06` | `UPGRADE` (DFU) | v2 | Qualcomm VM Upgrade Protocol (signed firmware images) |
 | `0x07` | `HANDSET_SERVICE` | v1 | `0x00` SET_MULTIPOINT (`0 = SINGLE_POINT`, `1 = MULTI_POINT`) |
 | `0x08` | `AUDIO_CURATION` | v6 | `0x00` GET_AC_STATE, `0x01` SET_AC_STATE, `0x02` GET_MODES_COUNT (`10`), `0x03` GET_CURRENT_MODE, `0x04` SET_CURRENT_MODE, `0x07` GET_TOGGLE_COUNT (`3`), `0x08` GET_TOGGLE_CFG, `0x09` SET_TOGGLE_CFG. **WARNING:** PDU `0x10` hangs firmware 9.0's GAIA RFCOMM task until BT reconnect! |
-| `0x0C` | `STATISTICS` | v1 | Live radio/codec/link diagnostics |
+| `0x0C` | `STATISTICS` | v1 | `0x00` GET_ALL_CATEGORIES (`[last_cat u16be]` → `[more u8, cats...]`), `0x01` GET_ALL_STATISTICS_IN_CATEGORY (`[cat u16be, last_stat u8]` → `[more u8, cat u16be, {id u8, len u8, val...}...]`), `0x02` GET_STATISTIC_VALUES. Category `0x0001` (`STREAMING`): `0x01` codec, `0x02` lossless, `0x03` bitrate, `0x04` primary RSSI (dBm), `0x05` link quality, `0x06` transport, `0x08` primary SNR (dB). |
 | `0x0D` | `BATTERY` | v1 | `0x00` GET_SUPPORTED_BATTERIES, `0x01` GET_BATTERY_LEVELS (`0=SINGLE, 1=LEFT, 2=RIGHT, 3=CASE`) |
 | `0x0E` | **`CUSTOM` (Redmagic)** | v1 | See full table below |
 
@@ -61,9 +61,18 @@ Frame format (big-endian):
 | **Mimi Preset Payload** | — | `0x18` | Payload bytes (MD5 sent to `0x1A`) |
 | **Mimi Preset ID** | `0x19` | `0x1A` | 16-byte MD5 |
 | **Mimi Tech Level** | `0x1B` | — | Read-only |
-| **Mimi Clear Preset** | — | `0x1D` | Clear |
+| **Mimi Clear Preset** | — | `0x1D` | Clear (0B payload). *Note: Global firmware 9.0 returns `ERR 0x01` (disabled); CN firmware enables Mimi DSP.* |
 
-## 4. USB Dongle HID Interface (`19d2:0616`, Interface 1, Usage Page `0xFF00`)
+## 4. Offline Firmware Container Layout (`APPUHDR5` — Read-Only Validation)
+
+Qualcomm VM Upgrade packages (for both `QCC5171` earbuds and `QCC3086` dongle) follow the signed `APPUHDR#` container format:
+- **Header (`APPUHDR5`, 8B magic + 4B big-endian length):** 8B ASCII `device_variant`, `major`/`minor` (`u16be`), compatible upgrades table (`u16be` count + 4B pairs), `ps_config_version` (`u16be`), compatible PS configs table.
+- **Partitions (`PARTDATA`, repeated):** 8B magic, 4B big-endian `length` (`payload + 4`), `partition_type` (`u16be`), `partition_num` (`u16be`), raw payload bytes.
+- **Footer (`APPUPFTR`):** 8B magic, 4B big-endian signature length, cryptographic OEM signature verified by hardware Secure Boot (eFuse).
+
+Use `daotws inspect-fw <file.bin>` (or `python3 fw_inspect.py <file.bin>`) to inspect headers, variants, versions, CRC-32 `file_id`, and SHA-256 digests offline without flashing.
+
+## 5. USB Dongle HID Interface (`19d2:0616`, Interface 1, Usage Page `0xFF00`)
 
 Verified live via `probe_dongle_version.py` using Qualcomm `qc-s5gen2` VM Upgrade protocol:
 - **Dongle Firmware Version:** `major=1, minor=1, config=2` (`v1.1 config=2`).

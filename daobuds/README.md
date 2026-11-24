@@ -20,7 +20,7 @@ daobuds status
 | Key | Action |
 |---|---|
 | `Space` / `R` | Refresh Bluetooth & USB dongle status |
-| `1` – `4` | Switch tabs (Audio & ANC, Touch, EQ, Hardware) |
+| `1` – `5` | Switch tabs (Audio & ANC, Touch, EQ, Hardware, Telemetry & Mimi) |
 | `B` | Apply 1-click Battery Saver & Stability preset |
 | `?` | Toggle keyboard shortcut help overlay |
 | `Q` | Quit |

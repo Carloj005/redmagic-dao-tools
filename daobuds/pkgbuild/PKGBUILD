@@ -1,5 +1,5 @@
 pkgname=daobuds
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc='Native controller for Redmagic Cyberbuds DAO TWS (BH4010) and QCC3086 USB dongle'
 arch=('x86_64' 'aarch64')

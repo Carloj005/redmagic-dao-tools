@@ -3,21 +3,27 @@
 
 Supports:
   - Bluetooth Classic RFCOMM Channel 11: Qualcomm GAIA v3 (0x001D) + Redmagic Custom (0x0E)
-  - USB Dongle QCC3086 (19d2:0616): Qualcomm qc-s5gen2 HID version & PipeWire audio status
+  - Live Radio Telemetry (Feature 0x0C STATISTICS: RSSI/SNR/codec/link diagnostics)
+  - Mimi Sound DSP (Feature 0x0E PDU 0x14-0x1D)
+  - Offline read-only APPUHDR5 firmware package validator (inspect-fw)
+  - USB Dongle QCC3086 (19d2:0616): safe sysfs detection & read-only qc-s5gen2 version query
 Zero external dependencies (Python 3 stdlib only).
 """
 
 import argparse
 import fcntl
 import glob
+import hashlib
 import json
 import os
+import re
 import select
 import socket
 import struct
 import subprocess
 import sys
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_CHANNEL = 11
 VENDOR_QTIL = 0x001D
@@ -52,6 +58,128 @@ LIGHT_NAMES = {v: k for k, v in LIGHT_MODES.items()}
 
 BAT_NAMES = {0: "single", 1: "left", 2: "right", 3: "case"}
 
+STAT_CATEGORY_NAMES = {
+    0x0001: "streaming",
+    0x0002: "spatial_audio",
+}
+
+STREAMING_CODEC_NAMES = {
+    0: "None",
+    1: "SBC",
+    2: "AAC",
+    3: "aptX",
+    4: "aptX HD",
+    5: "aptX Adaptive",
+    6: "aptX Lossless",
+    7: "LHDC / Vendor",
+    8: "LC3",
+}
+
+TRANSPORT_NAMES = {
+    0: "None",
+    1: "BR/EDR",
+    2: "LE",
+}
+
+# Qualcomm GAIA v3 Category 0x0001 (Streaming / Radio Link) Statistic IDs
+STREAMING_STAT_DEFS: Dict[int, Tuple[str, str]] = {
+    0x01: ("codec_type", "codec"),
+    0x02: ("lossless_enabled", "bool"),
+    0x03: ("bitrate", "u32_bitrate"),
+    0x04: ("primary_rssi_dbm", "signed"),
+    0x05: ("primary_link_quality", "uint"),
+    0x06: ("transport_type", "transport"),
+    0x07: ("audio_format", "uint"),
+    0x08: ("primary_snr_db", "signed"),
+    0x09: ("secondary_rssi_dbm", "signed"),
+    0x0A: ("secondary_link_quality", "uint"),
+    0x0B: ("primary_tx_power_dbm", "signed"),
+    0x0C: ("secondary_snr_db", "signed"),
+}
+
+
+def decode_stat_value(cat_id: int, stat_id: int, raw: bytes) -> Dict[str, Any]:
+    """Decode a GAIA v3 Feature 0x0C statistic value while always preserving raw hex."""
+    name = f"stat_0x{stat_id:02x}"
+    kind = "raw"
+    if cat_id == 0x0001 and stat_id in STREAMING_STAT_DEFS:
+        name, kind = STREAMING_STAT_DEFS[stat_id]
+
+    val: Any = raw.hex()
+    unit = ""
+
+    def _u_le(b: bytes) -> int:
+        return int.from_bytes(b, "little", signed=False)
+
+    def _s_le(b: bytes) -> int:
+        return int.from_bytes(b, "little", signed=True)
+
+    if len(raw) > 0:
+        if kind == "codec":
+            c = raw[0]
+            val = STREAMING_CODEC_NAMES.get(c, f"0x{c:02x}")
+        elif kind == "bool":
+            val = bool(raw[0])
+        elif kind == "transport":
+            t = raw[0]
+            val = TRANSPORT_NAMES.get(t, f"0x{t:02x}")
+        elif kind == "signed" and len(raw) in (1, 2, 4):
+            val = _s_le(raw)
+            if "dbm" in name:
+                unit = "dBm"
+            elif "db" in name:
+                unit = "dB"
+        elif kind == "u32_bitrate" and len(raw) in (2, 4):
+            bps = _u_le(raw)
+            if bps > 10000:
+                val = round(bps / 1000.0, 1)
+                unit = "kbps"
+            else:
+                val = bps
+                unit = "kbps"
+        elif kind == "uint" and len(raw) in (1, 2, 4):
+            val = _u_le(raw)
+        elif len(raw) in (1, 2, 4):
+            val = _u_le(raw)
+
+    out: Dict[str, Any] = {"id": stat_id, "name": name, "value": val, "raw_hex": raw.hex()}
+    if unit:
+        out["unit"] = unit
+    return out
+
+
+def parse_statistics_category_response(payload: bytes) -> Tuple[bool, int, List[Tuple[int, bytes]]]:
+    """Parse Feature 0x0C PDU 0x01 (GET_ALL_STATISTICS_IN_CATEGORY) response payload."""
+    if len(payload) < 3:
+        return False, 0, []
+    more = payload[0] != 0
+    cat_id = struct.unpack_from(">H", payload, 1)[0]
+    items: List[Tuple[int, bytes]] = []
+    pos = 3
+    while pos + 2 <= len(payload):
+        sid = payload[pos]
+        vlen = payload[pos + 1]
+        pos += 2
+        if pos + vlen > len(payload):
+            break
+        items.append((sid, payload[pos : pos + vlen]))
+        pos += vlen
+    return more, cat_id, items
+
+
+def _load_fw_inspect():
+    """Import sibling or installed fw_inspect module without external dependencies."""
+    search_dirs = [
+        os.path.dirname(os.path.realpath(__file__)),
+        os.path.join(os.path.expanduser("~"), ".local", "lib", "daotws"),
+    ]
+    for d in search_dirs:
+        if os.path.isfile(os.path.join(d, "fw_inspect.py")) and d not in sys.path:
+            sys.path.insert(0, d)
+    import fw_inspect  # type: ignore
+
+    return fw_inspect
+
 
 def find_dao_mac() -> Optional[str]:
     try:
@@ -76,6 +204,22 @@ def is_bt_connected(mac: str) -> bool:
         return "Connected: yes" in out
     except Exception:
         return False
+
+
+def get_bluez_rssi(mac: str) -> Optional[int]:
+    try:
+        out = subprocess.check_output(
+            ["bluetoothctl", "info", mac], text=True, stderr=subprocess.DEVNULL
+        )
+        m = re.search(r"RSSI:\s*0x[0-9a-fA-F]+\s*\((-?\d+)\)", out)
+        if m:
+            return int(m.group(1))
+        m2 = re.search(r"RSSI:\s*(-?\d+)", out)
+        if m2:
+            return int(m2.group(1))
+    except Exception:
+        pass
+    return None
 
 
 def get_dongle_status(query_hid_fw: bool = False) -> Dict[str, object]:
@@ -304,6 +448,89 @@ class DaoTwsClient:
             "right_triple": TOUCH_NAMES.get(d[3], str(d[3])),
         }
 
+    def get_mimi(self) -> Dict[str, Any]:
+        """Read Mimi Sound DSP state (Feature 0x0E PDU 0x14, 0x16, 0x19, 0x1B)."""
+        res: Dict[str, Any] = {"supported": False}
+        ok_en, d_en = self.command(FEAT_CUSTOM, 0x14)
+        if ok_en and d_en:
+            res["supported"] = True
+            res["enabled"] = bool(d_en[0])
+        elif not ok_en and d_en:
+            res["error_code"] = d_en[0]
+
+        ok_int, d_int = self.command(FEAT_CUSTOM, 0x16)
+        if ok_int and d_int:
+            res["supported"] = True
+            res["intensity"] = d_int[0]
+
+        ok_pid, d_pid = self.command(FEAT_CUSTOM, 0x19)
+        if ok_pid and d_pid:
+            res["supported"] = True
+            res["preset_id"] = d_pid.hex()
+
+        ok_tl, d_tl = self.command(FEAT_CUSTOM, 0x1B)
+        if ok_tl and d_tl:
+            res["supported"] = True
+            res["tech_level"] = d_tl[0] if len(d_tl) == 1 else d_tl.hex()
+
+        return res
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """Query Feature 0x0C STATISTICS categories & live radio/codec/link metrics."""
+        categories: List[int] = []
+        last_cat = 0
+        for _ in range(16):
+            ok, d = self.command(FEAT_STATS, 0x00, struct.pack(">H", last_cat))
+            if not ok or len(d) < 1:
+                break
+            more = d[0] != 0
+            page_cats = [struct.unpack_from(">H", d, i)[0] for i in range(1, len(d) - 1, 2)]
+            for c in page_cats:
+                if c not in categories:
+                    categories.append(c)
+            if not more or not page_cats or page_cats[-1] == last_cat:
+                break
+            last_cat = page_cats[-1]
+
+        cat_results: Dict[str, Any] = {}
+        summary: Dict[str, Any] = {}
+        for cat in categories:
+            cat_name = STAT_CATEGORY_NAMES.get(cat, f"cat_0x{cat:04x}")
+            entries: List[Dict[str, Any]] = []
+            seen_ids = set()
+            last_sid = 0
+            for _ in range(32):
+                ok, d = self.command(FEAT_STATS, 0x01, struct.pack(">HB", cat, last_sid))
+                if not ok or len(d) < 3:
+                    break
+                more, _rcat, raw_items = parse_statistics_category_response(d)
+                if not raw_items:
+                    break
+                progressed = False
+                for sid, val_bytes in raw_items:
+                    if sid not in seen_ids:
+                        seen_ids.add(sid)
+                        decoded = decode_stat_value(cat, sid, val_bytes)
+                        entries.append(decoded)
+                        if cat == 0x0001:
+                            summary[decoded["name"]] = decoded["value"]
+                        progressed = True
+                    last_sid = sid
+                if not more or not progressed:
+                    break
+            cat_results[f"0x{cat:04x}"] = {"name": cat_name, "stats": entries}
+
+        bluez_rssi = get_bluez_rssi(self.mac)
+        if bluez_rssi is not None:
+            summary["bluez_rssi_dbm"] = bluez_rssi
+
+        return {
+            "mac": self.mac,
+            "categories": [f"0x{c:04x}" for c in categories],
+            "summary": summary,
+            "by_category": cat_results,
+        }
+
     def get_anc(self) -> Dict[str, object]:
         res: Dict[str, object] = {}
         ok, d = self.command(FEAT_AUDIO_CURATION, 0x00, bytes([0x01]))
@@ -339,7 +566,7 @@ class DaoTwsClient:
             res["bands"] = bands
         return res
 
-    def status(self) -> Dict[str, object]:
+    def status(self, include_stats: bool = False) -> Dict[str, object]:
         mode, codec = self.get_mode()
         bat = self.get_batteries()
         alerts = []
@@ -349,7 +576,7 @@ class DaoTwsClient:
             alerts.append(f"Battery imbalance L={l_bat}% vs R={r_bat}%")
         if (l_bat is None) != (r_bat is None):
             alerts.append("Only one earbud connected (check case/pogo pins)")
-        return {
+        out: Dict[str, object] = {
             "bt_connected": True,
             "mac": self.mac,
             "firmware": self.get_version(),
@@ -363,8 +590,12 @@ class DaoTwsClient:
             "language": self.get_language(),
             "touch": self.get_touch(),
             "eq": self.get_eq(),
+            "mimi": self.get_mimi(),
             "alerts": alerts,
         }
+        if include_stats:
+            out["statistics"] = self.get_statistics()
+        return out
 
     def set_touch(self, ld: int, lt: int, rd: int, rt: int) -> bool:
         return self.command(FEAT_CUSTOM, 0x13, bytes([ld, lt, rd, rt]))[0]
@@ -411,6 +642,44 @@ class DaoTwsClient:
         raw = int(round(clamped * 60.0))
         return self.command(FEAT_MUSIC_EQ, 0x06, struct.pack(">BBh", band, band, raw))[0]
 
+    def set_mimi_enable(self, enabled: bool) -> bool:
+        return self.command(FEAT_CUSTOM, 0x15, bytes([1 if enabled else 0]))[0]
+
+    def set_mimi_intensity(self, intensity: int) -> bool:
+        clamped = max(0, min(100, intensity))
+        return self.command(FEAT_CUSTOM, 0x17, bytes([clamped]))[0]
+
+    def set_mimi_preset_id(self, preset_id_hex: str) -> bool:
+        raw = bytes.fromhex(preset_id_hex.strip())
+        if len(raw) != 16:
+            raise ValueError("Mimi preset ID must be exactly 16 bytes (32 hex chars MD5)")
+        return self.command(FEAT_CUSTOM, 0x1A, raw)[0]
+
+    def set_mimi_preset_payload(self, payload: bytes) -> bool:
+        ok1 = self.command(FEAT_CUSTOM, 0x18, payload)[0]
+        digest = hashlib.md5(payload).digest()
+        ok2 = self.command(FEAT_CUSTOM, 0x1A, digest)[0]
+        return ok1 and ok2
+
+    def clear_mimi_preset(self) -> bool:
+        return self.command(FEAT_CUSTOM, 0x1D, b"")[0]
+
+
+def _print_stats(stats: Dict[str, Any]) -> None:
+    print(f"DAO TWS Live Radio Telemetry ({stats['mac']}) — Feature 0x0C STATISTICS")
+    cats = stats.get("categories", [])
+    print(f"  Categories : {', '.join(cats) if cats else 'none'}")
+    by_cat = stats.get("by_category", {})
+    for cid, cdata in by_cat.items():
+        print(f"  [{cid} — {cdata['name']}]")
+        if not cdata["stats"]:
+            print("    (no active streaming metrics — start audio playback on BT)")
+        for s in cdata["stats"]:
+            unit = f" {s['unit']}" if "unit" in s else ""
+            print(f"    0x{s['id']:02x} {s['name']:<24}: {s['value']}{unit}  (raw={s['raw_hex']})")
+    if "bluez_rssi_dbm" in stats.get("summary", {}):
+        print(f"  BlueZ RSSI : {stats['summary']['bluez_rssi_dbm']} dBm")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Redmagic DAO TWS (BH4010) CLI controller")
@@ -419,6 +688,22 @@ def main():
 
     p_st = sub.add_parser("status", help="Show full earbuds + USB dongle status")
     p_st.add_argument("--json", action="store_true", help="Output JSON")
+    p_st.add_argument("--stats", action="store_true", help="Also include Feature 0x0C radio statistics")
+
+    p_stats = sub.add_parser("stats", help="Show live radio/link telemetry (Feature 0x0C STATISTICS)")
+    p_stats.add_argument("--json", action="store_true", help="Output JSON")
+    p_stats.add_argument("--watch", type=float, metavar="SEC", help="Continuously poll every SEC seconds")
+
+    p_mimi = sub.add_parser("mimi", help="Inspect or control Mimi Sound DSP (Feature 0x0E PDU 0x14-0x1D)")
+    p_mimi.add_argument("--enable", choices=["on", "off"], help="Enable or disable Mimi DSP")
+    p_mimi.add_argument("--intensity", type=int, help="Set Mimi intensity (0..100)")
+    p_mimi.add_argument("--preset-id", help="Set 16-byte MD5 preset ID (32 hex chars)")
+    p_mimi.add_argument("--clear", action="store_true", help="Clear stored Mimi preset")
+    p_mimi.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_fw = sub.add_parser("inspect-fw", help="Offline read-only APPUHDR5 firmware validator (no flashing)")
+    p_fw.add_argument("file", help="Path to Qualcomm APPUHDR5 .bin firmware file")
+    p_fw.add_argument("--json", action="store_true", help="Output JSON")
 
     p_touch = sub.add_parser("touch", help="Remap double/triple tap touch controls")
     acts = list(TOUCH_ACTIONS.keys())
@@ -461,6 +746,21 @@ def main():
     sub.add_parser("battery-saver", help="Disable LEDs, Hall, In-Ear, Multipoint")
 
     args = parser.parse_args()
+
+    # Offline command — does not require Bluetooth or USB hardware
+    if args.cmd == "inspect-fw":
+        fw_mod = _load_fw_inspect()
+        try:
+            info = fw_mod.inspect_firmware_file(args.file)
+        except OSError as e:
+            print(f"Error reading {args.file}: {e}", file=sys.stderr)
+            sys.exit(2)
+        if args.json:
+            print(json.dumps(info, indent=2))
+        else:
+            print(fw_mod.format_report(info))
+        sys.exit(0 if info["valid"] else 1)
+
     dongle = get_dongle_status()
     mac = args.mac or find_dao_mac()
 
@@ -469,7 +769,7 @@ def main():
         if mac and is_bt_connected(mac):
             try:
                 with DaoTwsClient(mac) as dev:
-                    st = dev.status()
+                    st = dev.status(include_stats=args.stats)
                     st["dongle"] = dongle
             except OSError as e:
                 st["bt_error"] = str(e)
@@ -490,13 +790,26 @@ def main():
             print(f"  Touch   : L2={t.get('left_double')}  L3={t.get('left_triple')}  R2={t.get('right_double')}  R3={t.get('right_triple')}")
             eq = st["eq"]
             print(f"  EQ      : enabled={eq.get('enabled')} preset={eq.get('preset')}")
+            mimi = st.get("mimi", {})
+            if isinstance(mimi, dict) and mimi.get("supported"):
+                print(
+                    f"  Mimi    : enabled={mimi.get('enabled')} intensity={mimi.get('intensity')} "
+                    f"preset={mimi.get('preset_id', '')[:12]}"
+                )
+            else:
+                print("  Mimi    : unsupported by firmware")
+            if args.stats and "statistics" in st:
+                _print_stats(st["statistics"])  # type: ignore[arg-type]
             if st.get("alerts"):
                 for a in st["alerts"]:
                     print(f"  ALERT   : {a}")
         else:
             print("DAO TWS Bluetooth: disconnected" + (f" ({st['bt_error']})" if "bt_error" in st else ""))
         if dongle.get("connected"):
-            print(f"USB Dongle (19d2:0616): CONNECTED  FW: {dongle.get('firmware', '?')}  Serial: {dongle.get('serial', '?')}")
+            print(
+                f"USB Dongle (19d2:0616): CONNECTED  USB: {dongle.get('usb_bcd', '?')}  "
+                f"Serial: {dongle.get('serial', '?')}"
+            )
         else:
             print("USB Dongle (19d2:0616): not connected")
         return
@@ -506,7 +819,44 @@ def main():
         sys.exit(1)
 
     with DaoTwsClient(mac) as dev:
-        if args.cmd == "touch":
+        if args.cmd == "stats":
+            while True:
+                stats = dev.get_statistics()
+                if args.json:
+                    print(json.dumps(stats, indent=2), flush=True)
+                else:
+                    _print_stats(stats)
+                if not args.watch:
+                    break
+                time.sleep(max(0.5, args.watch))
+        elif args.cmd == "mimi":
+            if args.enable is not None:
+                print("mimi enable   :", "OK" if dev.set_mimi_enable(args.enable == "on") else "FAILED/UNSUPPORTED")
+            if args.intensity is not None:
+                print("mimi intensity:", "OK" if dev.set_mimi_intensity(args.intensity) else "FAILED/UNSUPPORTED")
+            if args.preset_id is not None:
+                try:
+                    ok = dev.set_mimi_preset_id(args.preset_id)
+                    print("mimi preset_id:", "OK" if ok else "FAILED/UNSUPPORTED")
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    sys.exit(2)
+            if args.clear:
+                print("mimi clear    :", "OK" if dev.clear_mimi_preset() else "FAILED/UNSUPPORTED")
+            mimi = dev.get_mimi()
+            if args.json:
+                print(json.dumps(mimi, indent=2))
+            else:
+                if not mimi.get("supported"):
+                    err = mimi.get("error_code")
+                    suffix = f" (GAIA ERR 0x{err:02x})" if isinstance(err, int) else ""
+                    print(f"Mimi Sound DSP: unsupported/disabled on this firmware{suffix}")
+                else:
+                    print(
+                        f"Mimi Sound DSP: enabled={mimi.get('enabled')} intensity={mimi.get('intensity')} "
+                        f"tech_level={mimi.get('tech_level')} preset_id={mimi.get('preset_id', '')}"
+                    )
+        elif args.cmd == "touch":
             cur = dev.get_touch()
             ld = TOUCH_ACTIONS[args.ld] if args.ld else TOUCH_ACTIONS.get(cur.get("left_double", "play"), 1)
             lt = TOUCH_ACTIONS[args.lt] if args.lt else TOUCH_ACTIONS.get(cur.get("left_triple", "anc"), 4)

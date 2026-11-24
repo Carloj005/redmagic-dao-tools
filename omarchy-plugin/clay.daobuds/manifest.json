@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "clay.daobuds",
   "name": "DAO Buds",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "clay-thinkpad",
   "license": "MIT",
   "description": "Live L/R/Case battery, USB dongle status, stuck-in-case alerts, and quick ANC/Game/Battery-Saver controls for Redmagic Cyberbuds DAO TWS.",

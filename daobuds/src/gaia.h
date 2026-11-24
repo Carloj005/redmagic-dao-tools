@@ -14,6 +14,15 @@ struct GaiaFrame {
     QByteArray payload;
 };
 
+struct RadioStat {
+    uint16_t category = 0;
+    uint8_t id = 0;
+    QString name;
+    QString value;
+    QString unit;
+    QString rawHex;
+};
+
 struct DaoStatus {
     bool btConnected = false;
     QString mac;
@@ -55,6 +64,21 @@ struct DaoStatus {
     QVector<int> eqFreqs = {31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
     QVector<double> eqGains = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
+    // Mimi Sound DSP (Feature 0x0E PDU 0x14-0x1D)
+    bool mimiSupported = false;
+    bool mimiEnabled = false;
+    int mimiIntensity = 0;
+    QString mimiPresetId;
+    int mimiTechLevel = -1;
+
+    // Live Radio Telemetry (Feature 0x0C STATISTICS)
+    QList<RadioStat> radioStats;
+    QString activeStreamCodec;
+    int primaryRssi = -999;
+    int primarySnr = -999;
+    int primaryLinkQuality = -1;
+    int streamBitrateKbps = -1;
+
     bool dongleConnected = false;
     QString dongleFirmware;
     QString dongleSerial;
@@ -70,6 +94,7 @@ constexpr uint8_t kFeatEarbud = 0x01;
 constexpr uint8_t kFeatMusicEq = 0x05;
 constexpr uint8_t kFeatHandset = 0x07;
 constexpr uint8_t kFeatAudioCuration = 0x08;
+constexpr uint8_t kFeatStats = 0x0C;
 constexpr uint8_t kFeatBattery = 0x0D;
 constexpr uint8_t kFeatCustom = 0x0E;
 constexpr int kDefaultRfcommChannel = 11;
@@ -78,11 +103,14 @@ QByteArray buildFrame(uint8_t feature, uint8_t pduId, const QByteArray &payload 
                       uint16_t vendor = kVendorQtil, uint8_t pduType = 0);
 QList<GaiaFrame> parseFrames(const QByteArray &buffer);
 bool parseMacAddress(const QString &mac, uint8_t out[6]);
+QList<RadioStat> parseStatisticsCategoryPayload(const QByteArray &payload,
+                                                bool *moreOut = nullptr,
+                                                uint16_t *catOut = nullptr);
 
 QString findDaoMac();
 bool isBtConnected(const QString &mac);
 
-// Read-only USB HID (19d2:0616) probe via Qualcomm qc-s5gen2 protocol.
+// Read-only USB HID (19d2:0616) probe via sysfs.
 void probeDongle(DaoStatus &status);
 
 // Full Bluetooth + USB dongle snapshot (blocking; run on worker thread).

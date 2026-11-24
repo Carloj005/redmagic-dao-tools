@@ -1,6 +1,11 @@
 # Extracted third-party APK (never commit proprietary dumps)
 goper_unpack/
 *.apk
+*.dex
+*.odex
+*.vdex
+*.keystore
+*.jks
 
 # Local reverse-engineering scratch helpers
 dex_dump.py

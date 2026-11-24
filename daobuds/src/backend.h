@@ -56,6 +56,19 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantList eqFreqs READ eqFreqs NOTIFY stateChanged)
     Q_PROPERTY(QVariantList eqGains READ eqGains NOTIFY stateChanged)
 
+    Q_PROPERTY(bool mimiSupported READ mimiSupported NOTIFY stateChanged)
+    Q_PROPERTY(bool mimiEnabled READ mimiEnabled NOTIFY stateChanged)
+    Q_PROPERTY(int mimiIntensity READ mimiIntensity NOTIFY stateChanged)
+    Q_PROPERTY(QString mimiPresetId READ mimiPresetId NOTIFY stateChanged)
+    Q_PROPERTY(int mimiTechLevel READ mimiTechLevel NOTIFY stateChanged)
+
+    Q_PROPERTY(QVariantList radioStats READ radioStats NOTIFY stateChanged)
+    Q_PROPERTY(QString activeStreamCodec READ activeStreamCodec NOTIFY stateChanged)
+    Q_PROPERTY(int primaryRssi READ primaryRssi NOTIFY stateChanged)
+    Q_PROPERTY(int primarySnr READ primarySnr NOTIFY stateChanged)
+    Q_PROPERTY(int primaryLinkQuality READ primaryLinkQuality NOTIFY stateChanged)
+    Q_PROPERTY(int streamBitrateKbps READ streamBitrateKbps NOTIFY stateChanged)
+
 public:
     explicit Backend(bool autoPoll = true, QObject *parent = nullptr);
 
@@ -106,6 +119,19 @@ public:
     QVariantList eqFreqs() const;
     QVariantList eqGains() const;
 
+    bool mimiSupported() const { return m_state.mimiSupported; }
+    bool mimiEnabled() const { return m_state.mimiEnabled; }
+    int mimiIntensity() const { return m_state.mimiIntensity; }
+    QString mimiPresetId() const { return m_state.mimiPresetId; }
+    int mimiTechLevel() const { return m_state.mimiTechLevel; }
+
+    QVariantList radioStats() const;
+    QString activeStreamCodec() const { return m_state.activeStreamCodec; }
+    int primaryRssi() const { return m_state.primaryRssi; }
+    int primarySnr() const { return m_state.primarySnr; }
+    int primaryLinkQuality() const { return m_state.primaryLinkQuality; }
+    int streamBitrateKbps() const { return m_state.streamBitrateKbps; }
+
     // Headless JSON summary (used by CLI mode and unit tests).
     static QByteArray statusToJson(const DaoStatus &st);
 
@@ -125,6 +151,10 @@ public:
     Q_INVOKABLE void setInEarDetection(bool enabled);
     Q_INVOKABLE void setMultipoint(bool enabled);
     Q_INVOKABLE void setLanguage(int lang);
+    Q_INVOKABLE void setMimiEnabled(bool enabled);
+    Q_INVOKABLE void setMimiIntensity(int intensity);
+    Q_INVOKABLE void setMimiPresetId(const QString &hexId);
+    Q_INVOKABLE void clearMimiPreset();
     Q_INVOKABLE void applyBatterySaver();
 
 signals:

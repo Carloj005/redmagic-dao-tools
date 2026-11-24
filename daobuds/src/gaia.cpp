@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
@@ -19,6 +20,124 @@
 #include <unistd.h>
 
 namespace Gaia {
+
+namespace {
+
+int64_t readLeSigned(const QByteArray &b) {
+    if (b.size() == 1) return static_cast<int8_t>(b[0]);
+    if (b.size() == 2) {
+        const uint16_t u = static_cast<uint8_t>(b[0]) | (static_cast<uint16_t>(static_cast<uint8_t>(b[1])) << 8);
+        return static_cast<int16_t>(u);
+    }
+    if (b.size() == 4) {
+        uint32_t u = 0;
+        for (int i = 0; i < 4; ++i) u |= static_cast<uint32_t>(static_cast<uint8_t>(b[i])) << (8 * i);
+        return static_cast<int32_t>(u);
+    }
+    return 0;
+}
+
+uint64_t readLeUnsigned(const QByteArray &b) {
+    uint64_t u = 0;
+    const int n = std::min<int>(b.size(), 8);
+    for (int i = 0; i < n; ++i) u |= static_cast<uint64_t>(static_cast<uint8_t>(b[i])) << (8 * i);
+    return u;
+}
+
+QString streamingCodecName(uint8_t id) {
+    switch (id) {
+        case 0: return "None";
+        case 1: return "SBC";
+        case 2: return "AAC";
+        case 3: return "aptX";
+        case 4: return "aptX HD";
+        case 5: return "aptX Adaptive";
+        case 6: return "aptX Lossless";
+        case 7: return "LHDC / Vendor";
+        case 8: return "LC3";
+        default: return QString("0x%1").arg(id, 2, 16, QChar('0'));
+    }
+}
+
+RadioStat decodeStat(uint16_t cat, uint8_t id, const QByteArray &raw) {
+    RadioStat s;
+    s.category = cat;
+    s.id = id;
+    s.rawHex = QString::fromLatin1(raw.toHex());
+    s.name = QString("stat_0x%1").arg(id, 2, 16, QChar('0'));
+    s.value = s.rawHex;
+
+    if (cat == 0x0001 && !raw.isEmpty()) {
+        switch (id) {
+            case 0x01:
+                s.name = "codec_type";
+                s.value = streamingCodecName(static_cast<uint8_t>(raw[0]));
+                return s;
+            case 0x02:
+                s.name = "lossless_enabled";
+                s.value = (raw[0] != 0) ? "true" : "false";
+                return s;
+            case 0x03: {
+                s.name = "bitrate";
+                const uint64_t bps = readLeUnsigned(raw);
+                s.value = (bps > 10000) ? QString::number(bps / 1000.0, 'f', 1) : QString::number(bps);
+                s.unit = "kbps";
+                return s;
+            }
+            case 0x04:
+                s.name = "primary_rssi_dbm";
+                s.value = QString::number(readLeSigned(raw));
+                s.unit = "dBm";
+                return s;
+            case 0x05:
+                s.name = "primary_link_quality";
+                s.value = QString::number(readLeUnsigned(raw));
+                return s;
+            case 0x06: {
+                s.name = "transport_type";
+                const uint8_t t = static_cast<uint8_t>(raw[0]);
+                s.value = (t == 1) ? "BR/EDR" : (t == 2 ? "LE" : (t == 0 ? "None" : QString::number(t)));
+                return s;
+            }
+            case 0x07:
+                s.name = "audio_format";
+                s.value = QString::number(readLeUnsigned(raw));
+                return s;
+            case 0x08:
+                s.name = "primary_snr_db";
+                s.value = QString::number(readLeSigned(raw));
+                s.unit = "dB";
+                return s;
+            case 0x09:
+                s.name = "secondary_rssi_dbm";
+                s.value = QString::number(readLeSigned(raw));
+                s.unit = "dBm";
+                return s;
+            case 0x0A:
+                s.name = "secondary_link_quality";
+                s.value = QString::number(readLeUnsigned(raw));
+                return s;
+            case 0x0B:
+                s.name = "primary_tx_power_dbm";
+                s.value = QString::number(readLeSigned(raw));
+                s.unit = "dBm";
+                return s;
+            case 0x0C:
+                s.name = "secondary_snr_db";
+                s.value = QString::number(readLeSigned(raw));
+                s.unit = "dB";
+                return s;
+            default:
+                break;
+        }
+    }
+
+    if (raw.size() == 1 || raw.size() == 2 || raw.size() == 4)
+        s.value = QString::number(readLeUnsigned(raw));
+    return s;
+}
+
+}  // namespace
 
 QByteArray buildFrame(uint8_t feature, uint8_t pduId, const QByteArray &payload,
                       uint16_t vendor, uint8_t pduType) {
@@ -84,6 +203,33 @@ bool parseMacAddress(const QString &mac, uint8_t out[6]) {
     return true;
 }
 
+QList<RadioStat> parseStatisticsCategoryPayload(const QByteArray &payload,
+                                                bool *moreOut,
+                                                uint16_t *catOut) {
+    QList<RadioStat> stats;
+    if (moreOut) *moreOut = false;
+    if (catOut) *catOut = 0;
+    if (payload.size() < 3)
+        return stats;
+
+    const auto *b = reinterpret_cast<const uint8_t *>(payload.constData());
+    if (moreOut) *moreOut = (b[0] != 0);
+    const uint16_t cat = static_cast<uint16_t>((b[1] << 8) | b[2]);
+    if (catOut) *catOut = cat;
+
+    int pos = 3;
+    while (pos + 2 <= payload.size()) {
+        const uint8_t sid = b[pos];
+        const uint8_t vlen = b[pos + 1];
+        pos += 2;
+        if (pos + vlen > payload.size())
+            break;
+        stats.append(decodeStat(cat, sid, payload.mid(pos, vlen)));
+        pos += vlen;
+    }
+    return stats;
+}
+
 QString findDaoMac() {
     QProcess proc;
     proc.start("bluetoothctl", {"devices"});
@@ -125,7 +271,6 @@ int connectRfcomm(const QString &mac, int timeoutMs, QString *errorOut) {
         return -1;
     }
 
-    // Use non-blocking connect with poll() so unreachable earbuds never hang the worker.
     const int flags = ::fcntl(fd, F_GETFL, 0);
     ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
@@ -198,6 +343,68 @@ bool xfer(int fd, uint8_t feat, uint8_t pduId, const QByteArray &payload, QByteA
     return false;
 }
 
+void queryStatistics(int fd, DaoStatus &st) {
+    QList<uint16_t> categories;
+    uint16_t lastCat = 0;
+    QByteArray d;
+
+    for (int page = 0; page < 16; ++page) {
+        QByteArray req(2, 0);
+        req[0] = static_cast<char>((lastCat >> 8) & 0xFF);
+        req[1] = static_cast<char>(lastCat & 0xFF);
+        if (!xfer(fd, kFeatStats, 0x00, req, &d) || d.isEmpty())
+            break;
+        const auto *b = reinterpret_cast<const uint8_t *>(d.constData());
+        const bool more = (b[0] != 0);
+        bool added = false;
+        for (int i = 1; i + 1 < d.size(); i += 2) {
+            const uint16_t cid = static_cast<uint16_t>((b[i] << 8) | b[i + 1]);
+            if (!categories.contains(cid)) {
+                categories.append(cid);
+                added = true;
+            }
+            lastCat = cid;
+        }
+        if (!more || !added)
+            break;
+    }
+
+    for (uint16_t cid : categories) {
+        uint8_t lastSid = 0;
+        QSet<uint8_t> seen;
+        for (int page = 0; page < 32; ++page) {
+            QByteArray req(3, 0);
+            req[0] = static_cast<char>((cid >> 8) & 0xFF);
+            req[1] = static_cast<char>(cid & 0xFF);
+            req[2] = static_cast<char>(lastSid);
+            if (!xfer(fd, kFeatStats, 0x01, req, &d) || d.size() < 3)
+                break;
+            bool more = false;
+            const auto items = parseStatisticsCategoryPayload(d, &more);
+            if (items.isEmpty())
+                break;
+            bool progressed = false;
+            for (const RadioStat &item : items) {
+                if (!seen.contains(item.id)) {
+                    seen.insert(item.id);
+                    st.radioStats.append(item);
+                    progressed = true;
+                    if (item.category == 0x0001) {
+                        if (item.id == 0x01) st.activeStreamCodec = item.value;
+                        else if (item.id == 0x03) st.streamBitrateKbps = static_cast<int>(std::llround(item.value.toDouble()));
+                        else if (item.id == 0x04) st.primaryRssi = item.value.toInt();
+                        else if (item.id == 0x05) st.primaryLinkQuality = item.value.toInt();
+                        else if (item.id == 0x08) st.primarySnr = item.value.toInt();
+                    }
+                }
+                lastSid = item.id;
+            }
+            if (!more || !progressed)
+                break;
+        }
+    }
+}
+
 }  // namespace
 
 void probeDongle(DaoStatus &status) {
@@ -230,7 +437,6 @@ void probeDongle(DaoStatus &status) {
     if (!status.dongleConnected)
         return;
 
-    // Read bcdDevice from sysfs USB parent if available (e.g. "2967" -> "29.67").
     QDir usbDir("/sys/bus/usb/devices");
     for (const QString &u : usbDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
         QFile fv(usbDir.filePath(u + "/idVendor"));
@@ -272,7 +478,6 @@ DaoStatus queryFullStatus(const QString &macOverride) {
         return st;
     }
 
-    // Drain the unsolicited "SPPOK" vendor 0x2828 banner sent right after connect.
     (void)recvSome(fd, 350, 80);
 
     st.btConnected = true;
@@ -325,6 +530,24 @@ DaoStatus queryFullStatus(const QString &macOverride) {
         st.touchRT = static_cast<uint8_t>(d[3]);
     }
 
+    // Mimi Sound DSP (Feature 0x0E PDU 0x14, 0x16, 0x19, 0x1B — gracefully skipped on Global 9.0)
+    if (xfer(fd, kFeatCustom, 0x14, {}, &d) && !d.isEmpty()) {
+        st.mimiSupported = true;
+        st.mimiEnabled = (d[0] != 0);
+    }
+    if (xfer(fd, kFeatCustom, 0x16, {}, &d) && !d.isEmpty()) {
+        st.mimiSupported = true;
+        st.mimiIntensity = static_cast<uint8_t>(d[0]);
+    }
+    if (xfer(fd, kFeatCustom, 0x19, {}, &d) && !d.isEmpty()) {
+        st.mimiSupported = true;
+        st.mimiPresetId = QString::fromLatin1(d.toHex());
+    }
+    if (xfer(fd, kFeatCustom, 0x1B, {}, &d) && !d.isEmpty()) {
+        st.mimiSupported = true;
+        st.mimiTechLevel = static_cast<uint8_t>(d[0]);
+    }
+
     if (xfer(fd, kFeatAudioCuration, 0x00, QByteArray(1, 0x01), &d) && d.size() >= 2)
         st.ancEnabled = (d[1] != 0);
     if (xfer(fd, kFeatAudioCuration, 0x03, {}, &d) && !d.isEmpty())
@@ -358,6 +581,8 @@ DaoStatus queryFullStatus(const QString &macOverride) {
             st.eqGains[idx] = std::round((rawGain / 60.0) * 10.0) / 10.0;
         }
     }
+
+    queryStatistics(fd, st);
 
     ::close(fd);
     return st;

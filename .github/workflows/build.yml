@@ -1,0 +1,167 @@
+name: Build & Test Redmagic DAO TWS Suite
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux (Qt6 daobuds + Python + Shell + QML)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6 and BlueZ build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            g++ make \
+            libbluetooth-dev \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-declarative-dev-tools \
+            qml6-module-qtquick \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates
+
+      - name: Build native daobuds Qt6 app
+        run: ./daobuds/bin/build
+
+      - name: Run daobuds Qt unit tests
+        run: QT_QPA_PLATFORM=offscreen ./daobuds/bin/test
+
+      - name: Verify Python syntax & run unit test suite
+        run: |
+          python3 -m py_compile daotws.py fw_inspect.py daobuds-ble-watchdog.py inspect_bt.py probe_dongle_version.py windows/daobuds_win.py
+          python3 -m unittest discover -s tests -v
+
+      - name: Validate shell installer & dry-run
+        run: |
+          bash -n install.sh
+          ./install.sh --dry-run --no-sudo
+
+      - name: Validate JSON catalogs & Omarchy plugin QML syntax
+        run: |
+          python3 -m json.tool omarchy-plugin/clay.daobuds/manifest.json >/dev/null
+          python3 -m json.tool daobuds/src/i18n/en.json >/dev/null
+          python3 -m json.tool daobuds/src/i18n/it.json >/dev/null
+          QMLLINT="$(command -v qmllint || echo /usr/lib/qt6/bin/qmllint)"
+          if [ -x "$QMLLINT" ]; then
+            "$QMLLINT" --bare --json /tmp/qmllint.json omarchy-plugin/clay.daobuds/Service.qml omarchy-plugin/clay.daobuds/BarWidget.qml omarchy-plugin/clay.daobuds/Overlay.qml || true
+            python3 - <<'PYEOF'
+          import json, sys
+          data = json.load(open("/tmp/qmllint.json"))
+          errs = []
+          for f in data.get("files", []):
+              for w in f.get("warnings", []):
+                  if w.get("type") == "error" or w.get("id") == "syntax":
+                      errs.append((f.get("filename"), w))
+          if errs:
+              for e in errs:
+                  print("QML ERROR:", e, file=sys.stderr)
+              sys.exit(1)
+          print("QML syntax validation OK across", len(data.get("files", [])), "files")
+          PYEOF
+          fi
+
+      - name: Package Linux artifact
+        run: |
+          mkdir -p artifacts
+          cp daobuds/build/daobuds artifacts/daobuds-linux-x86_64
+          chmod +x artifacts/daobuds-linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daobuds-linux-x86_64
+          path: artifacts/daobuds-linux-x86_64
+
+  windows:
+    name: Windows (PyInstaller DAOBuds.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python syntax & run offline unit tests
+        shell: pwsh
+        run: |
+          python -m py_compile windows/daobuds_win.py fw_inspect.py
+          python -m unittest discover -s tests -v
+
+      - name: Build standalone DAOBuds.exe
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          python -m PyInstaller --noconfirm --onefile --windowed --name DAOBuds windows/daobuds_win.py
+          Test-Path dist/DAOBuds.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAOBuds-windows
+          path: dist/DAOBuds.exe
+
+  android:
+    name: Android (Gradle DaoBuds.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Debug APK
+        working-directory: android/DaoBuds
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk DaoBuds.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DaoBuds-android
+          path: android/DaoBuds/DaoBuds.apk
+
+  release:
+    name: Publish GitHub Release
+    needs: [linux, windows, android]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: release-assets
+        run: |
+          ls -lh
+          sha256sum DaoBuds.apk DAOBuds.exe daobuds-linux-x86_64 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release-assets/DaoBuds.apk
+            release-assets/DAOBuds.exe
+            release-assets/daobuds-linux-x86_64
+            release-assets/SHA256SUMS.txt

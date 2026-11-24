@@ -62,6 +62,7 @@ ApplicationWindow {
     Shortcut { sequence: "2"; context: Qt.ApplicationShortcut; onActivated: win.currentTab = 1 }
     Shortcut { sequence: "3"; context: Qt.ApplicationShortcut; onActivated: win.currentTab = 2 }
     Shortcut { sequence: "4"; context: Qt.ApplicationShortcut; onActivated: win.currentTab = 3 }
+    Shortcut { sequence: "5"; context: Qt.ApplicationShortcut; onActivated: win.currentTab = 4 }
     Shortcut { sequence: "B"; context: Qt.ApplicationShortcut; onActivated: if (backend.btConnected) backend.applyBatterySaver() }
 
     function batteryColor(pct) {
@@ -239,7 +240,7 @@ ApplicationWindow {
                 spacing: 8
 
                 Repeater {
-                    model: [qsTr("Audio & ANC"), qsTr("Touch"), qsTr("EQ"), qsTr("Hardware")]
+                    model: [qsTr("Audio & ANC"), qsTr("Touch"), qsTr("EQ"), qsTr("Hardware"), qsTr("Telemetry & Mimi")]
                     delegate: Button {
                         required property string modelData
                         required property int index
@@ -737,6 +738,160 @@ ApplicationWindow {
                         }
                     }
                 }
+
+                // TAB 4: LIVE RADIO TELEMETRY (0x0C) & MIMI SOUND DSP (0x0E)
+                ScrollView {
+                    clip: true
+                    ColumnLayout {
+                        width: win.width - 42
+                        spacing: 14
+                        enabled: backend.btConnected && !backend.busy
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            radius: theme.radius
+                            color: "#16161b"
+                            border.color: "#282832"
+                            implicitHeight: statsCol.implicitHeight + 24
+
+                            ColumnLayout {
+                                id: statsCol
+                                anchors.fill: parent
+                                anchors.margins: 14
+                                spacing: 10
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label { text: qsTr("Live Radio Telemetry (Feature 0x0C)"); font.pixelSize: 15; font.bold: true; color: "#f4f4f6" }
+                                    Item { Layout.fillWidth: true }
+                                    Button {
+                                        text: qsTr("Refresh Stats")
+                                        Material.roundedScale: theme.radius
+                                        onClicked: backend.refresh()
+                                    }
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 10
+                                    Repeater {
+                                        model: [
+                                            { lbl: qsTr("Stream Codec"), val: backend.activeStreamCodec.length > 0 ? backend.activeStreamCodec : "--" },
+                                            { lbl: "RSSI", val: backend.primaryRssi > -900 ? (backend.primaryRssi + " dBm") : "--" },
+                                            { lbl: "SNR", val: backend.primarySnr > -900 ? (backend.primarySnr + " dB") : "--" },
+                                            { lbl: qsTr("Link Quality"), val: backend.primaryLinkQuality >= 0 ? String(backend.primaryLinkQuality) : "--" },
+                                            { lbl: qsTr("Bitrate"), val: backend.streamBitrateKbps >= 0 ? (backend.streamBitrateKbps + " kbps") : "--" }
+                                        ]
+                                        delegate: Rectangle {
+                                            required property var modelData
+                                            Layout.fillWidth: true
+                                            implicitHeight: 54
+                                            radius: Math.min(4, theme.radius)
+                                            color: "#1e1e26"
+                                            border.color: "#2c2c38"
+                                            ColumnLayout {
+                                                anchors.centerIn: parent
+                                                spacing: 2
+                                                Label { Layout.alignment: Qt.AlignHCenter; text: modelData.lbl; font.pixelSize: 11; color: "#90909e" }
+                                                Label { Layout.alignment: Qt.AlignHCenter; text: modelData.val; font.pixelSize: 13; font.bold: true; color: "#f4f4f6" }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Label {
+                                    visible: backend.radioStats.length === 0
+                                    text: qsTr("No active streaming statistics yet — start Bluetooth audio playback and refresh.")
+                                    color: "#888896"
+                                    font.pixelSize: 12
+                                    wrapMode: Text.WordWrap
+                                }
+
+                                Repeater {
+                                    model: backend.radioStats
+                                    delegate: RowLayout {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        Label { text: modelData.category + ":" + modelData.id; color: theme.accent; font.pixelSize: 11; font.family: "monospace"; Layout.preferredWidth: 96 }
+                                        Label { text: modelData.name; color: "#d4d4dc"; font.pixelSize: 12; Layout.fillWidth: true }
+                                        Label { text: modelData.value + (modelData.unit.length > 0 ? (" " + modelData.unit) : ""); color: "#f4f4f6"; font.pixelSize: 12; font.bold: true }
+                                        Label { text: "(" + modelData.rawHex + ")"; color: "#6e6e7c"; font.pixelSize: 11; font.family: "monospace" }
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            radius: theme.radius
+                            color: "#16161b"
+                            border.color: "#282832"
+                            implicitHeight: mimiCol.implicitHeight + 24
+
+                            ColumnLayout {
+                                id: mimiCol
+                                anchors.fill: parent
+                                anchors.margins: 14
+                                spacing: 10
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label { text: qsTr("Mimi Sound DSP (Feature 0x0E)"); font.pixelSize: 15; font.bold: true; color: "#f4f4f6" }
+                                    Item { Layout.fillWidth: true }
+                                    Label {
+                                        text: backend.mimiSupported ? qsTr("Supported") : qsTr("Unsupported on this firmware")
+                                        color: backend.mimiSupported ? "#7ef0a6" : "#faad14"
+                                        font.pixelSize: 12
+                                    }
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Switch {
+                                        text: qsTr("Mimi Enabled")
+                                        checked: backend.mimiEnabled
+                                        onToggled: backend.setMimiEnabled(checked)
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Label { text: qsTr("Intensity") + ": " + Math.round(mimiSlider.value) + "%"; color: "#b4b4c0"; font.pixelSize: 12 }
+                                    Slider {
+                                        id: mimiSlider
+                                        from: 0; to: 100; stepSize: 1
+                                        value: backend.mimiIntensity
+                                        Layout.preferredWidth: 180
+                                        onPressedChanged: {
+                                            if (!pressed) backend.setMimiIntensity(Math.round(value))
+                                        }
+                                    }
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Label { text: qsTr("Preset ID (MD5)"); color: "#b4b4c0"; font.pixelSize: 12 }
+                                    TextField {
+                                        id: mimiPresetField
+                                        Layout.fillWidth: true
+                                        placeholderText: "32 hex chars (16-byte MD5)"
+                                        text: backend.mimiPresetId
+                                        font.family: "monospace"
+                                        font.pixelSize: 12
+                                    }
+                                    Button {
+                                        text: qsTr("Set ID")
+                                        Material.roundedScale: theme.radius
+                                        onClicked: backend.setMimiPresetId(mimiPresetField.text)
+                                    }
+                                    Button {
+                                        text: qsTr("Clear Preset")
+                                        Material.roundedScale: theme.radius
+                                        onClicked: backend.clearMimiPreset()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // --- Status footer ---
@@ -792,7 +947,7 @@ ApplicationWindow {
                         rowSpacing: 6
                         Label { text: "Space / R"; color: theme.accent; font.bold: true }
                         Label { text: qsTr("Refresh status"); color: "#d4d4dc" }
-                        Label { text: "1 - 4"; color: theme.accent; font.bold: true }
+                        Label { text: "1 - 5"; color: theme.accent; font.bold: true }
                         Label { text: qsTr("Switch tabs"); color: "#d4d4dc" }
                         Label { text: "B"; color: theme.accent; font.bold: true }
                         Label { text: qsTr("Apply Battery Saver"); color: "#d4d4dc" }

@@ -31,7 +31,7 @@ int main(int argc, char *argv[]) {
 
     QGuiApplication app(argc, argv);
     app.setApplicationName("daobuds");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion("1.0.0");
     app.setDesktopFileName("daobuds");
     app.setWindowIcon(QIcon::fromTheme("daobuds"));
 

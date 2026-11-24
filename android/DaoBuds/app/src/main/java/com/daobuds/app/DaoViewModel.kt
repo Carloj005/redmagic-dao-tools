@@ -118,6 +118,33 @@ class DaoViewModel : ViewModel() {
             it.command(GaiaProtocol.FEAT_HANDSET, 0x00, byteArrayOf(if (enabled) 1 else 0)).first
         }
 
+    fun setMimiEnabled(adapter: BluetoothAdapter?, enabled: Boolean) =
+        runCmd(adapter, if (enabled) "Mimi Sound attivo" else "Mimi Sound disattivato") {
+            it.command(GaiaProtocol.FEAT_CUSTOM, 0x15, byteArrayOf(if (enabled) 1 else 0)).first
+        }
+
+    fun setMimiIntensity(adapter: BluetoothAdapter?, intensity: Int) =
+        runCmd(adapter, "Intensità Mimi $intensity%") {
+            it.command(GaiaProtocol.FEAT_CUSTOM, 0x17, byteArrayOf(intensity.coerceIn(0, 100).toByte())).first
+        }
+
+    fun setMimiPresetId(adapter: BluetoothAdapter?, hexId: String) {
+        val clean = hexId.trim()
+        if (clean.length != 32 || !clean.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+            _state.value = _state.value.copy(statusMsg = "Mimi Preset ID richiede 32 caratteri hex (MD5)")
+            return
+        }
+        val bytes = ByteArray(16) { i -> clean.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+        runCmd(adapter, "Mimi Preset ID aggiornato") {
+            it.command(GaiaProtocol.FEAT_CUSTOM, 0x1A, bytes).first
+        }
+    }
+
+    fun clearMimiPreset(adapter: BluetoothAdapter?) =
+        runCmd(adapter, "Preset Mimi cancellato") {
+            it.command(GaiaProtocol.FEAT_CUSTOM, 0x1D).first
+        }
+
     fun applyBatterySaver(adapter: BluetoothAdapter?) =
         runCmd(adapter, "Salva-Batteria e Stabilità applicati") { s ->
             var ok = s.command(GaiaProtocol.FEAT_CUSTOM, 0x04, byteArrayOf(1, 0, 0, 0)).first

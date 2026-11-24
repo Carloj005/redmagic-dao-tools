@@ -23,6 +23,7 @@ FEAT_EARBUD = 0x01
 FEAT_EQ = 0x05
 FEAT_HANDSET = 0x07
 FEAT_AC = 0x08
+FEAT_STATS = 0x0C
 FEAT_BATTERY = 0x0D
 FEAT_CUSTOM = 0x0E
 
@@ -198,6 +199,41 @@ class GaiaClient:
                 raw = struct.unpack(">h", d[off + 5 : off + 7])[0]
                 gains.append(round(raw / 60.0, 1))
             st["eq_gains"] = gains
+
+        # Mimi Sound DSP (Feature 0x0E PDU 0x14, 0x16, 0x19)
+        mimi_sup = False
+        ok, d = self.cmd(FEAT_CUSTOM, 0x14)
+        st["mimi_on"] = bool(d[0]) if ok and d else False
+        if ok and d:
+            mimi_sup = True
+        ok, d = self.cmd(FEAT_CUSTOM, 0x16)
+        st["mimi_intensity"] = d[0] if ok and d else 0
+        if ok and d:
+            mimi_sup = True
+        ok, d = self.cmd(FEAT_CUSTOM, 0x19)
+        st["mimi_preset_id"] = d.hex() if ok and d else ""
+        if ok and d:
+            mimi_sup = True
+        st["mimi_supported"] = mimi_sup
+
+        # Live Radio Telemetry (Feature 0x0C Category 0x0001)
+        stats_lines = []
+        ok, cats = self.cmd(FEAT_STATS, 0x00, struct.pack(">H", 0))
+        if ok and len(cats) >= 3:
+            for ci in range(1, len(cats) - 1, 2):
+                cid = struct.unpack_from(">H", cats, ci)[0]
+                ok2, sdata = self.cmd(FEAT_STATS, 0x01, struct.pack(">HB", cid, 0))
+                if ok2 and len(sdata) >= 3:
+                    pos = 3
+                    while pos + 2 <= len(sdata):
+                        sid, vlen = sdata[pos], sdata[pos + 1]
+                        pos += 2
+                        if pos + vlen > len(sdata):
+                            break
+                        raw = sdata[pos : pos + vlen]
+                        pos += vlen
+                        stats_lines.append(f"cat=0x{cid:04x} id=0x{sid:02x} hex={raw.hex()}")
+        st["stats_lines"] = stats_lines
         return st
 
 
@@ -311,6 +347,29 @@ class DaoBudsApp(tk.Tk):
         ttk.Button(t_hw, text="Single-Point (Recommended)", command=lambda: self.apply_multipoint(False)).grid(row=3, column=1, sticky="w")
         ttk.Button(t_hw, text="Multipoint ON", command=lambda: self.apply_multipoint(True)).grid(row=3, column=2, sticky="w")
 
+        # Tab 5: Mimi DSP & Radio Telemetry
+        t_mimi = ttk.Frame(nb, padding=14)
+        nb.add(t_mimi, text="Mimi & Telemetry")
+        self.mimi_status_var = tk.StringVar(value="Mimi DSP: --")
+        self.mimi_on_var = tk.BooleanVar(value=False)
+        self.mimi_int_var = tk.IntVar(value=0)
+        self.mimi_pid_var = tk.StringVar(value="")
+        self.stats_var = tk.StringVar(value="Connect Bluetooth and start playback to read Feature 0x0C stats.")
+
+        ttk.Label(t_mimi, textvariable=self.mimi_status_var, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Checkbutton(t_mimi, text="Mimi Sound DSP Enabled", variable=self.mimi_on_var, command=self.apply_mimi_enable).grid(row=1, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Label(t_mimi, text="Intensity (0-100):").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Spinbox(t_mimi, from_=0, to=100, textvariable=self.mimi_int_var, width=8).grid(row=2, column=1, sticky="w")
+        ttk.Button(t_mimi, text="Set Intensity", command=self.apply_mimi_intensity).grid(row=2, column=2, padx=6, sticky="w")
+        ttk.Label(t_mimi, text="Preset ID (32 hex MD5):").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Entry(t_mimi, textvariable=self.mimi_pid_var, width=34).grid(row=3, column=1, sticky="w")
+        ttk.Button(t_mimi, text="Set ID", command=self.apply_mimi_preset_id).grid(row=3, column=2, padx=6, sticky="w")
+        ttk.Button(t_mimi, text="Clear Mimi Preset", command=self.clear_mimi_preset).grid(row=4, column=0, sticky="w", pady=6)
+
+        ttk.Separator(t_mimi, orient="horizontal").grid(row=5, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Label(t_mimi, text="Live Radio Telemetry (Feature 0x0C STATISTICS):", font=("Segoe UI", 10, "bold")).grid(row=6, column=0, columnspan=3, sticky="w")
+        ttk.Label(t_mimi, textvariable=self.stats_var, justify="left").grid(row=7, column=0, columnspan=3, sticky="w", pady=6)
+
         ttk.Label(self, textvariable=self.status_var, padding=(12, 6)).pack(fill="x", side="bottom")
 
     def _run_bg(self, fn):
@@ -352,6 +411,14 @@ class DaoBudsApp(tk.Tk):
         self.led_var.set(LED_LABELS[max(0, min(3, int(st["led_mode"])))])
         self.hall_var.set(bool(st["led_hall"]))
         self.inear_var.set(bool(st["inear"]))
+        self.mimi_status_var.set(
+            "Mimi Sound DSP: Supported" if st.get("mimi_supported") else "Mimi Sound DSP: Unsupported on this firmware"
+        )
+        self.mimi_on_var.set(bool(st.get("mimi_on", False)))
+        self.mimi_int_var.set(int(st.get("mimi_intensity", 0)))
+        self.mimi_pid_var.set(str(st.get("mimi_preset_id", "")))
+        slines = st.get("stats_lines") or []
+        self.stats_var.set("\n".join(slines) if slines else "No active streaming stats (start BT audio playback and Refresh).")
         self.status_var.set(f"Connected — Firmware {st['firmware']}")
 
     def _send(self, feat: int, pid: int, payload: bytes, label: str):
@@ -411,6 +478,26 @@ class DaoBudsApp(tk.Tk):
 
     def apply_multipoint(self, enabled: bool):
         self._send(FEAT_HANDSET, 0x00, bytes([1 if enabled else 0]), "Multipoint")
+
+    def apply_mimi_enable(self):
+        self._send(FEAT_CUSTOM, 0x15, bytes([1 if self.mimi_on_var.get() else 0]), "Mimi Enable")
+
+    def apply_mimi_intensity(self):
+        val = max(0, min(100, int(self.mimi_int_var.get())))
+        self._send(FEAT_CUSTOM, 0x17, bytes([val]), "Mimi Intensity")
+
+    def apply_mimi_preset_id(self):
+        try:
+            raw = bytes.fromhex(self.mimi_pid_var.get().strip())
+            if len(raw) != 16:
+                raise ValueError("Need 32 hex chars")
+        except ValueError:
+            messagebox.showwarning("DAO Buds", "Mimi Preset ID must be 32 hex characters (16-byte MD5).")
+            return
+        self._send(FEAT_CUSTOM, 0x1A, raw, "Mimi Preset ID")
+
+    def clear_mimi_preset(self):
+        self._send(FEAT_CUSTOM, 0x1D, b"", "Mimi Clear Preset")
 
     def apply_battery_saver(self):
         mac = self.mac_var.get().strip()

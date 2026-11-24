@@ -203,6 +203,47 @@ fun DaoBudsScreen(vm: DaoViewModel, adapter: android.bluetooth.BluetoothAdapter?
                         Button(onClick = { vm.setMultipoint(adapter, false) }) { Text("Single-Point (Stabile)") }
                         OutlinedButton(onClick = { vm.setMultipoint(adapter, true) }) { Text("Multipoint ON") }
                     }
+                    HorizontalDivider()
+                    Text(
+                        "Mimi Sound DSP (${if (st.mimiSupported) "Supportato" else "Non supportato dal FW"})",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("Mimi Attivo (${st.mimiIntensity}%)", modifier = Modifier.weight(1f))
+                        Switch(checked = st.mimiEnabled, onCheckedChange = { vm.setMimiEnabled(adapter, it) })
+                    }
+                    var mimiSlider by remember(st.mimiIntensity) { mutableFloatStateOf(st.mimiIntensity.toFloat()) }
+                    Slider(
+                        value = mimiSlider,
+                        onValueChange = { mimiSlider = it },
+                        onValueChangeFinished = { vm.setMimiIntensity(adapter, mimiSlider.toInt()) },
+                        valueRange = 0f..100f
+                    )
+                    var mimiPidInput by remember(st.mimiPresetId) { mutableStateOf(st.mimiPresetId) }
+                    OutlinedTextField(
+                        value = mimiPidInput,
+                        onValueChange = { mimiPidInput = it },
+                        label = { Text("Mimi Preset ID (32 hex MD5)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { vm.setMimiPresetId(adapter, mimiPidInput) }) { Text("Imposta ID") }
+                        OutlinedButton(onClick = { vm.clearMimiPreset(adapter) }) { Text("Cancella Preset") }
+                    }
+                    HorizontalDivider()
+                    Text("Telemetria Radio (Feature 0x0C)", style = MaterialTheme.typography.titleMedium)
+                    if (st.radioStats.isEmpty()) {
+                        Text(
+                            "Nessuna statistica stream attiva — avvia audio BT e premi Aggiorna.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFA0A0B0)
+                        )
+                    } else {
+                        st.radioStats.forEach { line ->
+                            Text(line, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }

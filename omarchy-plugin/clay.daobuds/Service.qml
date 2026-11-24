@@ -101,7 +101,7 @@ Item {
       root.alertText = alert
       if (alert.length > 0 && !root.alertNotified) {
         root.alertNotified = true
-        Quickshell.execDetached(["omarchy-notification-send", "-e", "-u", "normal", "DAO Buds", alert])
+        Quickshell.execDetached(["omarchy-notification-send", "--app-name", "DAO Buds", "-u", "normal", "-g", "󰋋", "DAO Buds", alert])
       } else if (alert.length === 0) {
         root.alertNotified = false
       }

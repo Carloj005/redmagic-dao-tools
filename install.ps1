@@ -65,6 +65,7 @@ Write-Host "=== Redmagic DAO TWS Windows Installer ===" -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 Copy-Item -Path (Join-Path $Root "windows\daobuds_win.py") -Destination $InstallDir -Force
 Copy-Item -Path (Join-Path $Root "windows\fix-dao-dongle-windows.ps1") -Destination $InstallDir -Force
+Copy-Item -Path (Join-Path $Root "fw_inspect.py") -Destination $InstallDir -Force
 Copy-Item -Path (Join-Path $Root "PROTOCOL.md") -Destination $InstallDir -Force
 
 # 2. Check Python 3 & optionally build .exe

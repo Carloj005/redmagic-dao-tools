@@ -22,6 +22,7 @@ object GaiaProtocol {
     const val FEAT_MUSIC_EQ = 0x05
     const val FEAT_HANDSET = 0x07
     const val FEAT_AUDIO_CURATION = 0x08
+    const val FEAT_STATS = 0x0C
     const val FEAT_BATTERY = 0x0D
     const val FEAT_CUSTOM = 0x0E
 
@@ -59,6 +60,11 @@ object GaiaProtocol {
         val touchRT: Int = 2,
         val eqPreset: Int = 0,
         val eqGains: List<Float> = List(10) { 0f },
+        val mimiSupported: Boolean = false,
+        val mimiEnabled: Boolean = false,
+        val mimiIntensity: Int = 0,
+        val mimiPresetId: String = "",
+        val radioStats: List<String> = emptyList(),
         val statusMsg: String = "",
         val alertMsg: String = ""
     )
@@ -230,6 +236,44 @@ object GaiaProtocol {
                     st = st.copy(eqGains = gains)
                 }
             }
+            // Mimi Sound DSP (Feature 0x0E PDU 0x14, 0x16, 0x19)
+            command(FEAT_CUSTOM, 0x14).let { (ok, d) ->
+                if (ok && d.isNotEmpty()) st = st.copy(mimiSupported = true, mimiEnabled = d[0].toInt() != 0)
+            }
+            command(FEAT_CUSTOM, 0x16).let { (ok, d) ->
+                if (ok && d.isNotEmpty()) st = st.copy(mimiSupported = true, mimiIntensity = d[0].toInt() and 0xFF)
+            }
+            command(FEAT_CUSTOM, 0x19).let { (ok, d) ->
+                if (ok && d.isNotEmpty()) {
+                    st = st.copy(mimiSupported = true, mimiPresetId = d.joinToString("") { "%02x".format(it) })
+                }
+            }
+            // Live Radio Telemetry (Feature 0x0C STATISTICS)
+            val statsOut = mutableListOf<String>()
+            command(FEAT_STATS, 0x00, byteArrayOf(0x00, 0x00)).let { (ok, cats) ->
+                if (ok && cats.size >= 3) {
+                    var ci = 1
+                    while (ci + 1 < cats.size) {
+                        val cid = ((cats[ci].toInt() and 0xFF) shl 8) or (cats[ci + 1].toInt() and 0xFF)
+                        ci += 2
+                        command(FEAT_STATS, 0x01, byteArrayOf(((cid shr 8) and 0xFF).toByte(), (cid and 0xFF).toByte(), 0x00)).let { (ok2, sd) ->
+                            if (ok2 && sd.size >= 3) {
+                                var pos = 3
+                                while (pos + 2 <= sd.size) {
+                                    val sid = sd[pos].toInt() and 0xFF
+                                    val vlen = sd[pos + 1].toInt() and 0xFF
+                                    pos += 2
+                                    if (pos + vlen > sd.size) break
+                                    val hex = sd.copyOfRange(pos, pos + vlen).joinToString("") { "%02x".format(it) }
+                                    pos += vlen
+                                    statsOut.add("0x%04x:0x%02x = %s".format(cid, sid, hex))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            st = st.copy(radioStats = statsOut)
             val alert = when {
                 (st.batteryLeft >= 0) != (st.batteryRight >= 0) ->
                     "Solo un auricolare connesso — controlla i contatti pogo-pin nel case"

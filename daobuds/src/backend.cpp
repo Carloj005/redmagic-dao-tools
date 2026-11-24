@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
+#include <QVariantMap>
 #include <algorithm>
 #include <cmath>
 #include <thread>
@@ -44,6 +45,21 @@ QVariantList Backend::eqGains() const {
     return list;
 }
 
+QVariantList Backend::radioStats() const {
+    QVariantList list;
+    for (const RadioStat &s : m_state.radioStats) {
+        QVariantMap m;
+        m["category"] = QString("0x%1").arg(s.category, 4, 16, QChar('0'));
+        m["id"] = QString("0x%1").arg(s.id, 2, 16, QChar('0'));
+        m["name"] = s.name;
+        m["value"] = s.value;
+        m["unit"] = s.unit;
+        m["rawHex"] = s.rawHex;
+        list.append(m);
+    }
+    return list;
+}
+
 QByteArray Backend::statusToJson(const DaoStatus &st) {
     QJsonObject root;
     root["bt_connected"] = st.btConnected;
@@ -64,6 +80,34 @@ QByteArray Backend::statusToJson(const DaoStatus &st) {
     root["in_ear_detection"] = st.inEarDetection;
     root["led_mode"] = st.ledMode;
     root["touch"] = QJsonArray{st.touchLD, st.touchLT, st.touchRD, st.touchRT};
+
+    QJsonObject mimi;
+    mimi["supported"] = st.mimiSupported;
+    mimi["enabled"] = st.mimiEnabled;
+    mimi["intensity"] = st.mimiIntensity;
+    if (!st.mimiPresetId.isEmpty()) mimi["preset_id"] = st.mimiPresetId;
+    if (st.mimiTechLevel >= 0) mimi["tech_level"] = st.mimiTechLevel;
+    root["mimi"] = mimi;
+
+    QJsonObject statsObj;
+    if (!st.activeStreamCodec.isEmpty()) statsObj["codec"] = st.activeStreamCodec;
+    if (st.primaryRssi > -900) statsObj["primary_rssi_dbm"] = st.primaryRssi;
+    if (st.primarySnr > -900) statsObj["primary_snr_db"] = st.primarySnr;
+    if (st.primaryLinkQuality >= 0) statsObj["primary_link_quality"] = st.primaryLinkQuality;
+    if (st.streamBitrateKbps >= 0) statsObj["bitrate_kbps"] = st.streamBitrateKbps;
+    QJsonArray statsArr;
+    for (const RadioStat &s : st.radioStats) {
+        QJsonObject item;
+        item["category"] = QString("0x%1").arg(s.category, 4, 16, QChar('0'));
+        item["id"] = s.id;
+        item["name"] = s.name;
+        item["value"] = s.value;
+        if (!s.unit.isEmpty()) item["unit"] = s.unit;
+        item["raw_hex"] = s.rawHex;
+        statsArr.append(item);
+    }
+    statsObj["items"] = statsArr;
+    root["statistics"] = statsObj;
 
     QJsonObject dongle;
     dongle["connected"] = st.dongleConnected;
@@ -246,6 +290,30 @@ void Backend::setMultipoint(bool enabled) {
 void Backend::setLanguage(int lang) {
     runAsyncWrite(tr("Voice prompt language updated"), Gaia::kFeatCustom, 0x0F,
                   QByteArray(1, static_cast<char>(lang & 0xFF)));
+}
+
+void Backend::setMimiEnabled(bool enabled) {
+    runAsyncWrite(enabled ? tr("Mimi Sound enabled") : tr("Mimi Sound disabled"),
+                  Gaia::kFeatCustom, 0x15, QByteArray(1, static_cast<char>(enabled ? 1 : 0)));
+}
+
+void Backend::setMimiIntensity(int intensity) {
+    const int clamped = std::clamp(intensity, 0, 100);
+    runAsyncWrite(tr("Mimi intensity updated"), Gaia::kFeatCustom, 0x17,
+                  QByteArray(1, static_cast<char>(clamped & 0xFF)));
+}
+
+void Backend::setMimiPresetId(const QString &hexId) {
+    const QByteArray raw = QByteArray::fromHex(hexId.trimmed().toLatin1());
+    if (raw.size() != 16) {
+        setStatusMessage(tr("Mimi Preset ID must be 32 hex characters (16-byte MD5)"));
+        return;
+    }
+    runAsyncWrite(tr("Mimi preset ID updated"), Gaia::kFeatCustom, 0x1A, raw);
+}
+
+void Backend::clearMimiPreset() {
+    runAsyncWrite(tr("Mimi preset cleared"), Gaia::kFeatCustom, 0x1D, {});
 }
 
 void Backend::applyBatterySaver() {
