@@ -11,7 +11,10 @@ Zero external dependencies (Python 3 stdlib only).
 """
 
 import argparse
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
 import glob
 import hashlib
 import json
@@ -256,7 +259,7 @@ def get_dongle_status(query_hid_fw: bool = False) -> Dict[str, object]:
             except OSError:
                 continue
 
-    if not query_hid_fw or not hidraw_path:
+    if not query_hid_fw or not hidraw_path or fcntl is None:
         return info
 
     # Read-only qc-s5gen2 HostVersionReq (0x19)
